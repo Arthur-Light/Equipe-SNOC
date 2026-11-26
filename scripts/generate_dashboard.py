@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Script de extração do Dashboard BI SNOC 2026.
-Utiliza a JQL exata consolidada do board, com paginação robusta,
-autenticação segura e mapeamento automático dos 21 colaboradores.
+Atualizado para a nova API do Jira Cloud (/rest/api/3/search/jql).
+Aplica a JQL consolidada por admissão e mapeia os atendimentos dos 21 colaboradores.
 """
 
 import os
@@ -113,10 +113,47 @@ def classify_tier(motive_idx: int, queue_name: str) -> int:
         return 2
 
 # ---------------------------------------------------------------------------
-# 3. Consulta ao Jira utilizando a JQL Consolidada do Board
+# 3. Consulta à Nova API do Jira (/rest/api/3/search/jql)
 # ---------------------------------------------------------------------------
+def run_jql_search(jql: str, fields: list):
+    """
+    Executa busca paginada na nova API /rest/api/3/search/jql
+    utilizando nextPageToken quando disponível, com fallback para paginação padrão.
+    """
+    url = f"{JIRA_BASE_URL}/rest/api/3/search/jql"
+    all_issues = []
+    next_page_token = None
+
+    while True:
+        payload = {
+            "jql": jql,
+            "maxResults": 100,
+            "fields": fields
+        }
+        if next_page_token:
+            payload["nextPageToken"] = next_page_token
+
+        res = requests.post(url, auth=AUTH, headers=HEADERS, json=payload, timeout=60)
+        
+        if res.status_code != 200:
+            print(f"ERRO FATAL da API Jira (Status {res.status_code}): {res.text}", file=sys.stderr)
+            sys.exit(1)
+
+        data = res.json()
+        issues = data.get("issues", [])
+        if not issues:
+            break
+
+        all_issues.extend(issues)
+        print(f"  Coletados {len(all_issues)} chamados...")
+
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token or data.get("isLast", False):
+            break
+
+    return all_issues
+
 def fetch_all():
-    # Monta os blocos de corte de admissão
     by_start = {}
     for idx, m in enumerate(MEMBERS):
         s = m["start"]
@@ -131,80 +168,34 @@ def fetch_all():
 
     fields = [
         "key", "summary", "issuetype", "priority", "status",
-        "created", "resolutiondate", "customfield_12014", "assignee"
+        "created", "resolutiondate", "customfield_12014"
     ]
 
-    url = f"{JIRA_BASE_URL}/rest/api/3/search"
-    start_at = 0
-    max_results = 100
+    print(f"Conectando ao Jira em {JIRA_BASE_URL}...")
+    issues = run_jql_search(consolidated_jql, fields)
     
     issue_dict = {}
-    
-    print(f"Conectando ao Jira em {JIRA_BASE_URL} com o usuário: {JIRA_USER_EMAIL}...")
-    
-    while True:
-        payload = {
-            "jql": consolidated_jql,
-            "startAt": start_at,
-            "maxResults": max_results,
-            "fields": fields
-        }
-        res = requests.post(url, auth=AUTH, headers=HEADERS, json=payload, timeout=60)
-        
-        if res.status_code != 200:
-            print(f"ERRO FATAL da API Jira (Status {res.status_code}): {res.text}", file=sys.stderr)
-            sys.exit(1)
+    for it in issues:
+        issue_dict[it["key"]] = it
 
-        data = res.json()
-        issues = data.get("issues", [])
-        total = data.get("total", 0)
+    print(f"Total de chamados únicos recuperados: {len(issue_dict)}")
 
-        if not issues:
-            break
-
-        for it in issues:
-            issue_dict[it["key"]] = it
-
-        start_at += len(issues)
-        print(f"  Coletados {start_at} de {total} chamados...")
-        
-        if start_at >= total:
-            break
-
-    # Mapeamento de atribuição dos colaboradores
-    # Busca individualmente as chaves por colaborador para garantir 100% dos pares exatos
+    # Mapeamento de quais colaboradores atuaram em cada chamado
     pairs_set = set()
-    print("\nMapeando atendimento por colaborador...")
+    print("\nMapeando atendimentos por colaborador...")
     for idx, m in enumerate(MEMBERS):
         accs = ", ".join(f'"{a}"' for a in m["acc"])
         s_date = m["start"]
         p_jql = f'assignee WAS IN ({accs}) AND created >= "{s_date}"'
         
-        p_start = 0
-        p_total_count = 0
-        while True:
-            p_payload = {
-                "jql": p_jql,
-                "startAt": p_start,
-                "maxResults": 100,
-                "fields": ["key"]
-            }
-            p_res = requests.post(url, auth=AUTH, headers=HEADERS, json=p_payload, timeout=60)
-            if p_res.status_code != 200:
-                break
-            p_data = p_res.json()
-            p_issues = p_data.get("issues", [])
-            if not p_issues:
-                break
-            for pit in p_issues:
-                pk = pit["key"]
-                if pk in issue_dict:
-                    pairs_set.add((pk, idx))
-            p_start += len(p_issues)
-            p_total_count += len(p_issues)
-            if p_start >= p_data.get("total", 0):
-                break
-        print(f"  [{idx+1}/21] {m['name']}: {p_total_count} chamados associados.")
+        p_issues = run_jql_search(p_jql, ["key"])
+        count = 0
+        for pit in p_issues:
+            pk = pit["key"]
+            if pk in issue_dict:
+                pairs_set.add((pk, idx))
+                count += 1
+        print(f"  [{idx+1}/21] {m['name']}: {count} chamados associados.")
 
     return issue_dict, pairs_set
 
@@ -333,10 +324,10 @@ def generate_html(payload, template_path="template/index_template.html", output_
         f.write(new_content)
 
     print(f"\n==========================================")
-    print(f"Sucesso! Painel gerado com sucesso.")
+    print(f"Painel gerado com sucesso!")
     print(f"Total de chamados únicos: {len(payload['rows'])}")
     print(f"Total de atendimentos: {len(payload['pairs']) // 2}")
-    print(f"Data de referência da extração: {payload['extract']}")
+    print(f"Data da extração: {payload['extract']}")
     print(f"==========================================\n")
 
 def main():

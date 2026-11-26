@@ -342,3 +342,11 @@ def generate_html(payload, template_path="template/index_template.html", output_
     print(f"Total de atendimentos: {len(payload['pairs']) // 2}")
     print(f"Data da extração: {payload['extract']}")
     print("==========================================\n")
+    
+    def main():
+        issue_dict, pairs_set = fetch_all()
+        payload = build_payload(issue_dict, pairs_set)
+        generate_html(payload)
+    
+    if __name__ == "__main__":
+    main()

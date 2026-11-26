@@ -311,29 +311,34 @@ def generate_html(payload, template_path="template/index_template.html", output_
         content = f.read()
 
     data_json = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-    pattern = r"const DATA = \{.*?\};"
-    replacement = f"const DATA = {data_json};"
+    new_data_str = f"const DATA = {data_json};"
 
-    if re.search(pattern, content, flags=re.DOTALL):
-        new_content = re.sub(pattern, replacement, content, count=1, flags=re.DOTALL)
+    # Substituição direta por marcadores (segura para arquivos grandes)
+    start_marker = "const DATA = {"
+    end_marker = "const R = DATA.rows"
+
+    idx_start = content.find(start_marker)
+    idx_end = content.find(end_marker)
+
+    if idx_start != -1 and idx_end != -1:
+        semicolon_idx = content.rfind(";", idx_start, idx_end)
+        if semicolon_idx != -1:
+            new_content = content[:idx_start] + new_data_str + content[semicolon_idx+1:]
+        else:
+            new_content = content[:idx_start] + new_data_str + "\n" + content[idx_end:]
+    elif "__DATA_JSON__" in content:
+        new_content = content.replace("__DATA_JSON__", new_data_str)
     else:
-        new_content = content.replace("__DATA_JSON__", f"const DATA = {data_json};")
+        print("ERRO: Marcador 'const DATA = {' não encontrado no template.", file=sys.stderr)
+        sys.exit(1)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(new_content)
 
-    print(f"\n==========================================")
-    print(f"Painel gerado com sucesso!")
+    print("\n==========================================")
+    print("Painel gerado com sucesso!")
     print(f"Total de chamados únicos: {len(payload['rows'])}")
     print(f"Total de atendimentos: {len(payload['pairs']) // 2}")
     print(f"Data da extração: {payload['extract']}")
-    print(f"==========================================\n")
-
-def main():
-    issue_dict, pairs_set = fetch_all()
-    payload = build_payload(issue_dict, pairs_set)
-    generate_html(payload)
-
-if __name__ == "__main__":
-    main()
+    print("==========================================\n")
